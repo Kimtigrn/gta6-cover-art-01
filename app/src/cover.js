@@ -1,12 +1,14 @@
-// Vice City Cover Studio v2 — renders a multi-panel GTA-style cover poster.
-// All drawing is canvas, deterministic and offline: panel photos come from files
-// already on the user's machine, every motif (sun disc, palm, skyline, flare) is
-// drawn procedurally, and the grain is a seeded pre-rendered tile, so two runs
-// produce byte-identical output. No network, no borrowed art, no Rockstar assets.
+// Vice City Cover Studio v3 — the cover renderer, rewritten from scratch.
+// Everything is drawn on canvas, fully deterministic and offline: panel photos
+// are files already on the user's machine, every poster motif (striped sun,
+// palm, skyline, flare) is procedural, and the grain comes from a seeded tile,
+// so two renders of the same state are byte-identical. No network, no borrowed
+// art, no Rockstar assets. The editor (main.js) and the screenshot runner
+// (shots.js) import LAYOUTS, PRESETS, CROPS, drawCover and panelAt from here.
 
-// Panel rectangles per layout, as [x, y, w, h] fractions of the canvas. The
-// picker in main.js is generated from these entries, so adding a layout here is
-// enough to offer it in the editor. Gaps are baked into the fractions.
+// Layouts: panel rectangles as [x, y, w, h] fractions of the canvas. The
+// editor builds its picker from these entries, so a new key here is a new
+// layout in the UI. Gaps are baked into the fractions themselves.
 export const LAYOUTS = {
   hero2: {
     label: 'Hero + 2',
@@ -79,13 +81,21 @@ export const LAYOUTS = {
     label: 'Full-bleed hero',
     panels: [[0, 0, 1, 1]],
   },
+  duo: {
+    label: 'Vertical duo',
+    panels: [
+      [0, 0, 0.49, 1],
+      [0.51, 0, 0.49, 1],
+    ],
+  },
 };
 
-// Colour grades. Each grade is a gradient map: `map` runs from the deep shadow
-// colour to the hot highlight colour and is washed over the poster; `titleFrom`
-// / `titleTo` fill the title with a vertical gradient; `duo` is the two-colour
-// pair used by the per-panel duotone wash; `halftone` colours the dot shadow
-// under the title; `sun` colours the procedural sun disc.
+// Colour grades. Each grade is a gradient map: `map` washes from the deep
+// shadow colour to the hot highlight colour across the poster; `titleFrom` /
+// `titleTo` fill the title with a vertical gradient; `duo` is the two-colour
+// pair for the per-panel duotone wash; `halftone` colours the dot shadow under
+// the title; `sun` colours the procedural sun disc; `glow` is the warm light
+// pooled at the top right.
 export const PRESETS = {
   sunset: {
     label: 'Vice Sunset',
@@ -178,23 +188,37 @@ export const PRESETS = {
     halftone: 'rgba(255, 255, 255, 0.8)',
     sun: ['#ffffff', '#8a8a8a'],
   },
+  violet: {
+    label: 'Electric Violet',
+    map: ['rgba(150, 80, 255, 0.20)', 'rgba(60, 0, 120, 0.36)'],
+    glow: 'rgba(180, 120, 255, 0.5)',
+    titleFrom: '#f2e8ff',
+    titleTo: '#b678ff',
+    title: '#f6ecff',
+    titleStroke: '#1c0033',
+    subtitle: '#d9b8ff',
+    duo: ['#150029', '#a55cff'],
+    halftone: 'rgba(150, 80, 255, 0.85)',
+    sun: ['#ecd9ff', '#7a2bff'],
+  },
 };
 
-// Crop presets: named vertical anchors for a panel photo. `fill` is the plain
-// cover fit; the others pre-set zoom + vertical pan so a face or skyline lands
-// where the poster needs it. Applied in main.js, stored as zoom/oy on the panel.
+// Crop presets: named anchors for a panel photo. `fill` is the plain cover
+// fit; the others pre-set zoom + vertical pan so a face or a skyline lands
+// where the poster needs it. main.js applies them as zoom/oy on the panel.
 export const CROPS = {
   fill: { label: 'Fill', zoom: 1, oy: 0 },
   top: { label: 'Top', zoom: 1.25, oy: 0.22 },
   centre: { label: 'Centre', zoom: 1.25, oy: 0 },
   bottom: { label: 'Bottom', zoom: 1.25, oy: -0.22 },
+  face: { label: 'Face', zoom: 1.5, oy: 0.12 },
   closeup: { label: 'Close-up', zoom: 1.8, oy: 0.05 },
 };
 
-/** Deterministic pseudo-random generator, so grain and motifs are identical on every run. */
-function mulberry32(seed) {
+/** Small deterministic PRNG, so grain and motif placement never change. */
+function seededRandom(seed) {
   let a = seed >>> 0;
-  return () => {
+  return function next() {
     a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
     t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -203,57 +227,65 @@ function mulberry32(seed) {
   };
 }
 
-// Pre-rendered film-grain tile, built once and reused: a 128x128 canvas of
-// seeded black/white speckles. Tiling it is far faster than the old per-pixel
-// loop and reads as real film grain at alpha ~0.09.
-let grainTile = null;
-function getGrainTile() {
-  if (grainTile) return grainTile;
+// Film grain as a pre-rendered 128x128 tile of seeded black/white speckles.
+// Tiling it is far faster than a per-pixel loop and reads as real grain.
+let grainCanvas = null;
+function grainTile() {
+  if (grainCanvas) return grainCanvas;
   const tile = document.createElement('canvas');
   tile.width = 128;
   tile.height = 128;
   const tctx = tile.getContext('2d');
-  const rng = mulberry32(20261119);
-  const img = tctx.createImageData(128, 128);
-  for (let i = 0; i < img.data.length; i += 4) {
+  const rng = seededRandom(777001);
+  const data = tctx.createImageData(128, 128);
+  for (let i = 0; i < data.data.length; i += 4) {
     const v = rng() > 0.5 ? 255 : 0;
-    img.data[i] = v;
-    img.data[i + 1] = v;
-    img.data[i + 2] = v;
-    img.data[i + 3] = 255;
+    data.data[i] = v;
+    data.data[i + 1] = v;
+    data.data[i + 2] = v;
+    data.data[i + 3] = 255;
   }
-  tctx.putImageData(img, 0, 0);
-  grainTile = tile;
+  tctx.putImageData(data, 0, 0);
+  grainCanvas = tile;
   return tile;
 }
 
-/** Draws one photo into a panel rect, cover-fit, with zoom, pan and duotone. */
-function drawPanel(ctx, panel, rect, w, h, preset) {
-  const [fx, fy, fw, fh] = rect;
-  const x = fx * w;
-  const y = fy * h;
-  const pw = fw * w;
-  const ph = fh * h;
+/**
+ * Cover-fit geometry for one photo inside one panel rect (all in pixels):
+ * returns the drawn image rect [dx, dy, dw, dh] for the given zoom and pan.
+ * The photo centre is clamped so the image always covers the panel — a big
+ * pan on a short panel saturates at the photo edge instead of sliding the
+ * photo out of frame and leaving an empty band.
+ */
+function coverFit(imgW, imgH, rect, zoom, ox, oy) {
+  const [rx, ry, rw, rh] = rect;
+  const base = Math.max(rw / imgW, rh / imgH);
+  const scale = base * (zoom || 1);
+  const dw = imgW * scale;
+  const dh = imgH * scale;
+  const wantX = rx + rw / 2 + (ox || 0) * rw;
+  const wantY = ry + rh / 2 + (oy || 0) * rh;
+  const cx = Math.min(Math.max(wantX, rx + rw - dw / 2), rx + dw / 2);
+  const cy = Math.min(Math.max(wantY, ry + rh - dh / 2), ry + dh / 2);
+  return [cx - dw / 2, cy - dh / 2, dw, dh];
+}
+
+/** Draws one panel: the photo (cover-fit, zoomed, panned, duotoned) or a placeholder. */
+function paintPanel(ctx, panel, frac, w, h, preset) {
+  const [fx, fy, fw, fh] = frac;
+  const rect = [fx * w, fy * h, fw * w, fh * h];
+  const [x, y, pw, ph] = rect;
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, pw, ph);
   ctx.clip();
   if (panel.img) {
-    const img = panel.img;
-    const base = Math.max(pw / img.naturalWidth, ph / img.naturalHeight);
-    const scale = base * (panel.zoom || 1);
-    const iw = img.naturalWidth * scale;
-    const ih = img.naturalHeight * scale;
-    const cxRaw = x + pw / 2 + (panel.ox || 0) * pw;
-    const cyRaw = y + ph / 2 + (panel.oy || 0) * ph;
-    // Clamp the photo's centre so it always covers the panel: a big pan on a
-    // short panel saturates at the photo's edge instead of sliding the photo
-    // out of frame (which left empty bands in early screenshots).
-    const cx = Math.min(Math.max(cxRaw, x + pw - iw / 2), x + iw / 2);
-    const cy = Math.min(Math.max(cyRaw, y + ph - ih / 2), y + ih / 2);
-    ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih);
-    // Per-panel duotone: a two-colour gradient map laid over the photo at the
-    // panel's tone strength. `overlay` keeps the photo's light and shade.
+    const [dx, dy, dw, dh] = coverFit(
+      panel.img.naturalWidth, panel.img.naturalHeight, rect, panel.zoom, panel.ox, panel.oy,
+    );
+    ctx.drawImage(panel.img, dx, dy, dw, dh);
+    // Per-panel duotone: the grade's two-colour gradient over the photo at
+    // the panel's tone strength, in `overlay` so light and shade survive.
     const tone = panel.duotone ? (panel.tone ?? 0.55) : 0;
     if (tone > 0) {
       const duo = ctx.createLinearGradient(x, y, x + pw, y + ph);
@@ -278,20 +310,20 @@ function drawPanel(ctx, panel, rect, w, h, preset) {
     ctx.textBaseline = 'middle';
     ctx.fillText('ADD A PHOTO', x + pw / 2, y + ph / 2);
   }
-  // Thin inner shade so panels read as separate frames.
+  // Thin inner shade so neighbouring panels read as separate frames.
   ctx.strokeStyle = 'rgba(0,0,0,0.35)';
   ctx.lineWidth = Math.max(1, w * 0.002);
   ctx.strokeRect(x, y, pw, ph);
   ctx.restore();
 }
 
-// Procedural sun disc with horizontal stripe cuts, floating over the hero
-// panel. The stripes are punched out with destination-out, so the photo shows
-// through the gaps — the classic sunset-poster sun.
-function drawSunDisc(ctx, w, h, preset) {
-  const cx = w * 0.78;
-  const cy = h * 0.20;
-  const r = Math.min(w, h) * 0.115;
+// Sun disc with horizontal stripe cuts, floating over the hero panel. The
+// stripes are punched out with destination-out, so the photo shows through
+// the gaps — the classic sunset-poster sun.
+function paintSun(ctx, w, h, preset) {
+  const cx = w * 0.68;
+  const cy = h * 0.15;
+  const r = Math.min(w, h) * 0.105;
   ctx.save();
   const disc = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
   disc.addColorStop(0, preset.sun[0]);
@@ -301,22 +333,22 @@ function drawSunDisc(ctx, w, h, preset) {
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.fill();
   ctx.globalCompositeOperation = 'destination-out';
-  const gap = r * 0.28;
-  for (let i = 0; i < 3; i++) {
-    const y = cy + r * 0.18 + i * gap;
-    ctx.fillRect(cx - r, y, r * 2, gap * 0.42);
+  const gap = r * 0.24;
+  for (let i = 0; i < 4; i++) {
+    const y = cy + r * 0.08 + i * gap;
+    ctx.fillRect(cx - r, y, r * 2, gap * 0.4);
   }
   ctx.restore();
 }
 
-// Palm-tree silhouette: a curved trunk and five drooping bezier fronds, drawn
-// at the bottom-left corner of the first (hero) panel, over the photo and
-// under the title band. Anchored to the hero panel's bottom edge so it sits on
+// Palm silhouette: a curved trunk and six drooping bezier fronds, standing at
+// the bottom-left of the first (hero) panel, over the photo and under the
+// title band. It is anchored to the hero panel's bottom edge, so it sits on
 // the poster's ground line in every layout.
-function drawPalm(ctx, w, h, layout) {
+function paintPalm(ctx, w, h, layout) {
   const hero = layout.panels[0];
-  const baseX = (hero[0] + 0.045) * w;
-  const baseY = (hero[1] + hero[3]) * h;
+  const groundX = (hero[0] + 0.045) * w;
+  const groundY = (hero[1] + hero[3]) * h;
   const s = Math.min(w, h) * 0.0011;
   ctx.save();
   ctx.fillStyle = 'rgba(8, 3, 16, 0.88)';
@@ -325,19 +357,20 @@ function drawPalm(ctx, w, h, layout) {
   // Trunk: a gentle S-curve rising from the hero panel's bottom edge.
   ctx.lineWidth = 9 * s;
   ctx.beginPath();
-  ctx.moveTo(baseX, baseY + 6 * s);
-  ctx.quadraticCurveTo(baseX + 24 * s, baseY - 55 * s, baseX + 8 * s, baseY - 135 * s);
+  ctx.moveTo(groundX, groundY + 6 * s);
+  ctx.quadraticCurveTo(groundX + 24 * s, groundY - 55 * s, groundX + 8 * s, groundY - 135 * s);
   ctx.stroke();
-  // Fronds: five arcs fanning out from the crown, each drooping so the tip
-  // falls below the control point — the palm's signature downward curve.
-  const crownX = baseX + 8 * s;
-  const crownY = baseY - 135 * s;
+  // Fronds: six arcs fanning from the crown, each drooping so the tip falls
+  // below its control point — the palm's signature downward curve.
+  const crownX = groundX + 8 * s;
+  const crownY = groundY - 135 * s;
   const fronds = [
-    [-140, -55, -105, 25],
-    [-115, -105, -60, -20],
-    [-45, -140, 15, -55],
-    [50, -125, 105, -35],
-    [100, -70, 150, 30],
+    [-150, -40, -118, 38],
+    [-128, -95, -72, -8],
+    [-70, -138, -5, -48],
+    [-10, -145, 55, -60],
+    [62, -118, 112, -28],
+    [108, -62, 156, 42],
   ];
   ctx.lineWidth = 7 * s;
   for (const [c1x, c1y, ex, ey] of fronds) {
@@ -354,14 +387,16 @@ function drawPalm(ctx, w, h, layout) {
   ctx.restore();
 }
 
-// Low skyline silhouette along the bottom edge of the first panel row: a row
-// of seeded building blocks rising from a solid ground strip, with a few lit
-// windows. Short and grounded, it reads as a city skyline divider instead of
-// floating blocks.
-function drawSkyline(ctx, w, h, layout) {
+// Low skyline silhouette along the bottom edge of the first panel row: seeded
+// building blocks rising from a solid ground strip, a few with antennas and
+// lit windows. Short and grounded, it reads as a city divider, not floating
+// blocks.
+function paintSkyline(ctx, w, h, layout) {
   const hero = layout.panels[0];
-  const base = Math.min((hero[1] + hero[3]) * h, h * 0.66);
-  const rng = mulberry32(77019);
+  // Capped at 0.60h so the strip never reaches the subtitle of a two-line
+  // title (the subtitle sits near 0.68h); with a taller cap it struck through.
+  const base = Math.min((hero[1] + hero[3]) * h, h * 0.60);
+  const rng = seededRandom(77019);
   let x = w * 0.02;
   ctx.save();
   // Ground strip the buildings stand on.
@@ -377,18 +412,18 @@ function drawSkyline(ctx, w, h, layout) {
   }
   // A scattering of lit windows.
   ctx.fillStyle = 'rgba(255, 214, 130, 0.75)';
-  const rng2 = mulberry32(90210);
+  const rng2 = seededRandom(90210);
   for (let i = 0; i < 30; i++) {
     ctx.fillRect(w * (0.03 + rng2() * 0.94), base - h * 0.05 * rng2(), 3, 4);
   }
   ctx.restore();
 }
 
-// Subtle lens flare: a bright core where the sun sits plus a faint diagonal
-// streak and two ghost circles, all radial gradients.
-function drawLensFlare(ctx, w, h, preset) {
-  const cx = w * 0.78;
-  const cy = h * 0.20;
+// Lens flare: a bright core where the sun sits, a faint diagonal streak and
+// two ghost circles, all radial gradients.
+function paintFlare(ctx, w, h, preset) {
+  const cx = w * 0.68;
+  const cy = h * 0.15;
   ctx.save();
   const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, w * 0.05);
   core.addColorStop(0, 'rgba(255,255,255,0.85)');
@@ -412,15 +447,15 @@ function drawLensFlare(ctx, w, h, preset) {
   ctx.restore();
 }
 
-// Halftone dot shadow under the title: rows of dots that shrink as they fall
-// away from the lettering — the print-poster texture the top entries use.
-function drawHalftone(ctx, cx, y, width, preset, size) {
-  const rows = 3;
+// Halftone dot shadow under the title: four rows of dots that shrink as they
+// fall away from the lettering — the print-poster texture the top entries use.
+function paintHalftone(ctx, cx, y, width, preset, size) {
+  const rows = 4;
   const step = Math.max(5, size * 0.09);
   ctx.save();
   ctx.fillStyle = preset.halftone;
   for (let r = 0; r < rows; r++) {
-    const radius = Math.max(1, size * 0.035 * (1 - r * 0.3));
+    const radius = Math.max(1, size * 0.038 * (1 - r * 0.28));
     const yy = y + r * step;
     for (let x = cx - width / 2; x <= cx + width / 2; x += step) {
       ctx.beginPath();
@@ -431,24 +466,26 @@ function drawHalftone(ctx, cx, y, width, preset, size) {
   ctx.restore();
 }
 
-// Title lines: split on " | " (or a newline) into up to two lines, each fitted
-// to maxWidth, filled with the grade's vertical gradient and outlined. The
-// subtitle is drawn as a neon-script accent: slanted, letterspaced, glowing.
-function drawTitleBlock(ctx, title, subtitle, w, h, preset) {
+// Title block: one or two lines (split on " | " or a newline), each fitted to
+// the poster width, filled with the grade's vertical gradient and outlined.
+// The subtitle is a neon-script accent above the title: sheared, letterspaced
+// and glowing, placed clear of the first line's cap height so the title never
+// strikes through it.
+function paintTitle(ctx, title, subtitle, w, h, preset) {
   const lines = title.split(/\s*\|\s*|\n/).map((s) => s.trim()).filter(Boolean).slice(0, 2);
   if (!lines.length) return 0;
   const maxSize = h * 0.115;
   const bandBottom = h - h * 0.075;
   // Measure the widest line first so both lines share one size.
   let size = maxSize;
-  const fit = () => {
+  const widest = () => {
     ctx.font = `900 ${size}px "Liberation Sans", sans-serif`;
     return Math.max(...lines.map((l) => ctx.measureText(l).width));
   };
-  while (fit() > w * 0.92 && size > 12) size -= 2;
+  while (widest() > w * 0.92 && size > 12) size -= 1;
   const lineHeight = size * 1.04;
-  const totalHeight = lineHeight * lines.length;
-  const firstBaseline = bandBottom - totalHeight + size;
+  const blockHeight = lineHeight * lines.length;
+  const firstBaseline = bandBottom - blockHeight + size;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'alphabetic';
   ctx.lineJoin = 'round';
@@ -471,12 +508,12 @@ function drawTitleBlock(ctx, title, subtitle, w, h, preset) {
   });
   // Halftone dots under the last line.
   const lastWidth = ctx.measureText(lines[lines.length - 1]).width;
-  drawHalftone(ctx, w / 2, bandBottom + size * 0.16, Math.min(lastWidth, w * 0.92), preset, size);
-  // Neon-script subtitle above the title: slanted (sheared), letterspaced, glowing.
-  // It sits clear above the first line's cap height, never struck through by it.
+  paintHalftone(ctx, w / 2, bandBottom + size * 0.16, Math.min(lastWidth, w * 0.92), preset, size);
+  // Neon-script subtitle above the title.
   const sub = (subtitle || '').trim().toUpperCase();
   if (sub) {
     const subSize = Math.max(10, Math.round(size * 0.26));
+    const spaced = [...sub].join('\u2009');
     ctx.save();
     ctx.translate(w / 2, firstBaseline - size * 1.02);
     ctx.transform(1, 0, -0.18, 1, 0, 0);
@@ -486,21 +523,21 @@ function drawTitleBlock(ctx, title, subtitle, w, h, preset) {
     ctx.shadowColor = preset.glow;
     ctx.shadowBlur = subSize * 0.55;
     ctx.fillStyle = preset.subtitle;
-    ctx.fillText([...sub].join('\u2009'), 0, 0);
+    ctx.fillText(spaced, 0, 0);
     // Second pass without blur so the letters stay crisp under the glow.
     ctx.shadowBlur = 0;
-    ctx.fillText([...sub].join('\u2009'), 0, 0);
+    ctx.fillText(spaced, 0, 0);
     ctx.restore();
   }
   return size;
 }
 
-function drawGrain(ctx, w, h) {
-  const tile = getGrainTile();
+function paintGrain(ctx, w, h) {
+  const tile = grainTile();
   const pattern = ctx.createPattern(tile, 'repeat');
   if (!pattern) return;
   ctx.save();
-  ctx.globalAlpha = 0.09;
+  ctx.globalAlpha = 0.08;
   ctx.fillStyle = pattern;
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
@@ -520,21 +557,21 @@ export function drawCover(canvas, state) {
   ctx.fillStyle = '#14081f';
   ctx.fillRect(0, 0, w, h);
 
-  layout.panels.forEach((rect, i) => {
-    drawPanel(ctx, state.panels[i] ?? {}, rect, w, h, preset);
+  layout.panels.forEach((frac, i) => {
+    paintPanel(ctx, state.panels[i] ?? {}, frac, w, h, preset);
   });
 
   // Poster motifs sit over the photos and under the wash, so they read as
   // part of the poster rather than stickers on top of it.
   if (state.motifs !== false) {
-    drawSunDisc(ctx, w, h, preset);
-    drawPalm(ctx, w, h, layout);
-    drawSkyline(ctx, w, h, layout);
-    drawLensFlare(ctx, w, h, preset);
+    paintSun(ctx, w, h, preset);
+    paintPalm(ctx, w, h, layout);
+    paintSkyline(ctx, w, h, layout);
+    paintFlare(ctx, w, h, preset);
   }
 
-  // Warm sun glow, top right of the first panel.
-  const glow = ctx.createRadialGradient(w * 0.82, h * 0.16, 0, w * 0.82, h * 0.16, w * 0.34);
+  // Warm sun glow, where the sun disc sits.
+  const glow = ctx.createRadialGradient(w * 0.68, h * 0.15, 0, w * 0.68, h * 0.15, w * 0.34);
   glow.addColorStop(0, preset.glow);
   glow.addColorStop(1, 'rgba(255, 176, 66, 0)');
   ctx.fillStyle = glow;
@@ -571,9 +608,9 @@ export function drawCover(canvas, state) {
   }
 
   const title = (state.title || '').trim().toUpperCase();
-  if (title) drawTitleBlock(ctx, title, state.subtitle || '', w, h, preset);
+  if (title) paintTitle(ctx, title, state.subtitle || '', w, h, preset);
 
-  if (state.grain !== false) drawGrain(ctx, w, h);
+  if (state.grain !== false) paintGrain(ctx, w, h);
 }
 
 /** Which layout panel (index) contains point (x, y) in canvas pixels, or -1. */

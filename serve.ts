@@ -8,16 +8,19 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./app', import.meta.url)));
-const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-// --port wins; otherwise PORT (handy for screenshot runs on a fixed port),
-// otherwise the default 8080.
-const requested = portIndex === -1
-  ? Number(process.env.PORT ?? 8080)
-  : Number(args[portIndex + 1]);
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
 
-const MIME: Record<string, string> = {
+function pickPort(): number {
+  const args = process.argv.slice(2);
+  const flagAt = args.indexOf('--port');
+  // --port wins; otherwise PORT (handy for screenshot runs on a fixed port),
+  // otherwise the default 8080.
+  const wanted = flagAt === -1
+    ? Number(process.env.PORT ?? 8080)
+    : Number(args[flagAt + 1]);
+  return Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+}
+
+const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -42,21 +45,32 @@ const MIME: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
 };
 
-createServer((request, response) => {
-  const url = new URL(request.url ?? '/', 'http://localhost');
+function contentType(file: string): string {
+  return TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream';
+}
+
+function resolveInside(requestPath: string): { file: string } | { error: number } {
   let pathname: string;
   try {
-    pathname = decodeURIComponent(url.pathname);
+    pathname = decodeURIComponent(requestPath);
   } catch {
-    response.writeHead(400).end('bad request');
-    return;
+    return { error: 400 };
   }
   if (pathname.endsWith('/')) pathname += 'index.html';
   const file = resolve(join(root, normalize(pathname)));
-  if (file !== root && !file.startsWith(root + sep)) {
-    response.writeHead(403).end('forbidden');
+  if (file !== root && !file.startsWith(root + sep)) return { error: 403 };
+  return { file };
+}
+
+const port = pickPort();
+
+createServer((request, response) => {
+  const resolved = resolveInside(new URL(request.url ?? '/', 'http://localhost').pathname);
+  if ('error' in resolved) {
+    response.writeHead(resolved.error).end(resolved.error === 403 ? 'forbidden' : 'bad request');
     return;
   }
+  const file = resolved.file;
   let size: number;
   try {
     const stats = statSync(file);
@@ -67,7 +81,7 @@ createServer((request, response) => {
     return;
   }
   response.writeHead(200, {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-type': contentType(file),
     'content-length': size,
     'cache-control': 'no-store',
   });
