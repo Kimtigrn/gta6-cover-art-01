@@ -275,15 +275,13 @@ export async function exportAllPNG() {
 document.getElementById('export').addEventListener('click', exportPNG);
 document.getElementById('exportAll').addEventListener('click', exportAllPNG);
 
-// The bold display font must be ready before the first paint, or the canvas
-// falls back to a system face and the lettering changes between runs.
+// The lettering uses the system sans-serif stack (no bundled font file),
+// so there is nothing to preload before the first paint — just wait for
+// whatever system faces are loading, then paint.
 async function boot() {
   try {
-    await document.fonts.load('900 100px "Liberation Sans"');
-    await document.fonts.load('italic 700 40px "Liberation Sans"');
-    await document.fonts.load('700 40px "Liberation Sans"');
     await document.fonts.ready;
-  } catch { /* system face is an acceptable fallback */ }
+  } catch { /* no system faces to wait for */ }
   const params = new URLSearchParams(location.search);
   const shot = params.get('shot');
   if (shot) {

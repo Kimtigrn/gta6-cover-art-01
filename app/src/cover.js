@@ -305,7 +305,7 @@ function paintPanel(ctx, panel, frac, w, h, preset) {
     ctx.fillStyle = g;
     ctx.fillRect(x, y, pw, ph);
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.font = `600 ${Math.round(ph * 0.07)}px "Liberation Sans", sans-serif`;
+    ctx.font = `600 ${Math.round(ph * 0.07)}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('ADD A PHOTO', x + pw / 2, y + ph / 2);
@@ -479,7 +479,7 @@ function paintTitle(ctx, title, subtitle, w, h, preset) {
   // Measure the widest line first so both lines share one size.
   let size = maxSize;
   const widest = () => {
-    ctx.font = `900 ${size}px "Liberation Sans", sans-serif`;
+    ctx.font = `900 ${size}px sans-serif`;
     return Math.max(...lines.map((l) => ctx.measureText(l).width));
   };
   while (widest() > w * 0.92 && size > 12) size -= 1;
@@ -517,7 +517,7 @@ function paintTitle(ctx, title, subtitle, w, h, preset) {
     ctx.save();
     ctx.translate(w / 2, firstBaseline - size * 1.02);
     ctx.transform(1, 0, -0.18, 1, 0, 0);
-    ctx.font = `italic 700 ${subSize}px "Liberation Sans", sans-serif`;
+    ctx.font = `italic 700 ${subSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.shadowColor = preset.glow;
