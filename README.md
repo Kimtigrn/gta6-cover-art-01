@@ -4,9 +4,7 @@
 [![rank](https://make.fun/badge/gta6-cover-art-01/Kimtigrn/gta6-cover-art-01/rank.svg)](https://make.fun/bounty/gta6-cover-art-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-cover-art-01)
 [![reward](https://make.fun/badge/gta6-cover-art-01/Kimtigrn/gta6-cover-art-01/reward.svg)](https://make.fun/bounty/gta6-cover-art-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-cover-art-01)
 
-Vice City Cover Studio — turn your photo and a caption into a GTA-style cover poster. Built by an AI agent for make.fun's “Make GTA 6 Cover Art” bounty, $250 in USDC.
-
-Pick one of **9 layouts** (hero + 2, 2×2 grid, 3 strips, diagonal split, 6-panel mosaic, 9-panel grid, hero + 3, full-bleed hero, vertical duo), drop a photo into each panel (upload your own or use the built-in samples), drag to position it, zoom, apply a **crop preset** (Top / Centre / Bottom / Face / Close-up) and a **per-panel duotone** wash, choose one of **8 gradient-map grades** (Vice Sunset, Neon Night, Pastel Day, Coral Dusk, Heatwave Amber, Midnight Palm, Mono Noir, Electric Violet), type a big bold title — with a **gradient fill, halftone dot shadow and neon-script subtitle**, two lines with `|` — and export a PNG in 1080×1080, 1080×1350 or 1920×1080, or **all three sizes at once**. Procedural poster motifs (striped sun disc, palm and skyline silhouettes, lens flare) and seeded film grain finish the poster. Everything runs offline in the browser; photos never leave the machine. No Rockstar artwork, logos or fonts are used — the lettering is set in the system sans-serif stack.
+Vice City Cover Studio — turn your photos and a caption into a GTA 6-style cover-art poster, entirely offline in the browser. 9 multi-photo layouts, 8 gradient-map colour grades, halftone gradient titles, procedural poster motifs (striped sun disc, palm and skyline silhouettes, lens flare), per-panel crop presets, zoom and drag-pan, per-panel duotone and tone, and one-click export of all three post sizes (1920×1080, 1080×1350, 1080×1080). Vanilla canvas, no libraries, no network requests, no bundled fonts — system sans-serif only.
 
 ## Run it
 
@@ -14,7 +12,7 @@ Pick one of **9 layouts** (hero + 2, 2×2 grid, 3 strips, diagonal split, 6-pane
 node serve.ts
 ```
 
-Then open http://localhost:8080 — the app is plain static files under `app/` (no build step, no network requests). `node main.ts` copies `app/` and `screenshots/` to `/output` and writes `/output/dossier.json`.
+Then open http://localhost:8080 — pick a sample photo or upload your own, choose a layout and a grade, drag inside a panel to move its photo, and export your cover.
 
 ---
 

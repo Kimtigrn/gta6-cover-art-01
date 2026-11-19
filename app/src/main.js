@@ -1,306 +1,353 @@
-// Vice City Cover Studio v3 — the editor wiring: layout / size / grade
-// pickers, per-panel photos with crop presets + duotone, drag to pan, caption
-// editing, motifs, and PNG export (one size, or all three sizes at once).
-// A `?shot=` query hands control to ./shots.js, which sets up a fixed scene
-// for a screenshot instead. Photos are read on this machine only and never
-// leave it.
-import { drawCover, panelAt, LAYOUTS, PRESETS, CROPS } from './cover.js';
-import { runShot } from './shots.js';
+// Vice City Cover Studio — the editor: state, pickers, panel editing, export.
+//
+// The editor keeps one state object (layout, grade, size, caption, one panel per
+// layout cell) and repaints the preview canvas on every change. Photos are the two
+// bundled samples plus anything the user uploads; panels remember their own photo,
+// zoom, pan point, crop, duotone and tone. Export renders the same state offscreen
+// at the exact post sizes and downloads PNGs.
+import {
+  SIZES, LAYOUTS, GRADES, CROPS,
+  renderCover, gradeById, cropById, layoutById, defaultPanel,
+} from './cover.js';
+import { parseShot } from './shots.js';
 
-const canvas = document.getElementById('cover');
-const status = document.getElementById('status');
-
-export const SIZES = {
-  square: { label: '1080 x 1080', w: 1080, h: 1080 },
-  portrait: { label: '1080 x 1350', w: 1080, h: 1350 },
-  wide: { label: '1920 x 1080', w: 1920, h: 1080 },
-};
-
-// Nine panel slots: the largest layout (9-panel grid) needs nine. Smaller
-// layouts simply ignore the extra slots.
-function emptyPanel() {
-  return { img: null, key: null, zoom: 1, ox: 0, oy: 0, duotone: false, tone: 0.55, crop: 'fill' };
-}
+const SAMPLES = [
+  { key: 'pier', label: 'Pier', src: 'samples/pier.jpg' },
+  { key: 'boulevard', label: 'Boulevard', src: 'samples/boulevard.jpg' },
+];
 
 const state = {
-  layout: 'mosaic',
-  size: 'square',
-  preset: 'amber',
-  title: 'VICE CITY',
+  layout: 'duo',
+  grade: 'violet',
+  size: 'wide',
+  title: 'VICE | CITY',
   subtitle: 'A LEONIDA STORY',
-  grain: true,
-  vignette: true,
-  duotone: false,
-  motifs: true,
-  panels: Array.from({ length: 9 }, emptyPanel),
+  panels: [],
 };
 
+let photos = []; // { key, label, src, img } — samples first, then uploads.
 let selected = 0;
-let drag = null;
+let shotSpec = null;
 
-export function loadImage(url) {
-  return new Promise((resolve, reject) => {
+const preview = document.getElementById('preview');
+const coverCanvas = document.getElementById('cover');
+
+/** Rebuild the panel list for the current layout, keeping edits where cells match. */
+function buildPanels() {
+  const cells = layoutById(state.layout).cells(100, 100);
+  const next = [];
+  for (let i = 0; i < cells.length; i++) {
+    const old = state.panels[i];
+    next.push(old ?? defaultPanel(i % Math.max(1, photos.length)));
+  }
+  state.panels = next;
+  selected = Math.min(selected, next.length - 1);
+}
+
+/** Keep a panel's pan point inside the photo so no gap ever shows. */
+function clampPan(panel, cell, img) {
+  if (!img) return;
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const scale = Math.max(cell.w / iw, cell.h / ih) * panel.zoom;
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const minPx = cell.w / (2 * dw);
+  const minPy = cell.h / (2 * dh);
+  panel.px = Math.min(Math.max(panel.px, minPx), 1 - minPx);
+  panel.py = Math.min(Math.max(panel.py, minPy), 1 - minPy);
+}
+
+/** The preview canvas's pixel size for the current export size (max 960 wide). */
+function previewDims() {
+  const s = SIZES[state.size] ?? SIZES.wide;
+  const scale = Math.min(1, 960 / Math.max(s.w, s.h));
+  return { w: Math.round(s.w * scale), h: Math.round(s.h * scale) };
+}
+
+/** Paint the editor preview. */
+function renderPreview() {
+  const dims = previewDims();
+  preview.width = dims.w;
+  preview.height = dims.h;
+  renderCover(preview, state, photos.map((p) => p.img ?? null), dims);
+}
+
+/** Paint a cover at exact pixel dimensions (export and shot mode). */
+function renderExact(canvas, w, h) {
+  renderCover(canvas, state, photos.map((p) => p.img ?? null), { w, h });
+}
+
+function loadImage(src) {
+  return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
+    img.onerror = () => resolve(null);
+    img.src = src;
   });
 }
 
-function activePanelCount() {
-  return LAYOUTS[state.layout].panels.length;
-}
-
-function paint() {
-  const size = SIZES[state.size];
-  if (canvas.width !== size.w || canvas.height !== size.h) {
-    canvas.width = size.w;
-    canvas.height = size.h;
-    canvas.style.aspectRatio = `${size.w} / ${size.h}`;
+async function loadPhotos() {
+  for (const s of SAMPLES) {
+    const img = await loadImage(s.src);
+    photos.push({ key: s.key, label: s.label, src: s.src, img });
   }
-  drawCover(canvas, state);
-  document.getElementById('panelName').textContent = String(selected + 1);
-  const panel = state.panels[selected];
-  document.getElementById('zoom').value = String(panel.zoom);
-  document.getElementById('crop').value = panel.crop;
-  document.getElementById('tone').value = String(panel.tone);
-  document.getElementById('duotonePanel').checked = panel.duotone;
+  buildPanels();
 }
 
-function highlight(containerId, value) {
-  for (const b of document.getElementById(containerId).children) {
-    b.classList.toggle('on', b.dataset.value === value);
-  }
-}
-
-function buildPicker(containerId, entries, onPick) {
+/** One picker button row from a list of {id, label} and the current value. */
+function fillChips(containerId, items, current, onPick) {
   const box = document.getElementById(containerId);
-  for (const [value, entry] of Object.entries(entries)) {
+  box.innerHTML = '';
+  for (const item of items) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.dataset.value = value;
-    b.textContent = entry.label;
-    b.addEventListener('click', () => onPick(value));
+    b.textContent = item.label;
+    if (item.id === current) b.classList.add('active');
+    b.addEventListener('click', () => onPick(item.id));
     box.appendChild(b);
   }
 }
 
-buildPicker('layouts', LAYOUTS, (v) => {
-  state.layout = v;
-  selected = Math.min(selected, activePanelCount() - 1);
-  highlight('layouts', v);
-  paint();
-});
-buildPicker('sizes', SIZES, (v) => {
-  state.size = v;
-  highlight('sizes', v);
-  paint();
-});
-buildPicker('presets', PRESETS, (v) => {
-  state.preset = v;
-  highlight('presets', v);
-  paint();
-});
-highlight('layouts', state.layout);
-highlight('sizes', state.size);
-highlight('presets', state.preset);
-
-// Crop preset select: built from CROPS in cover.js so the list stays in sync.
-const cropSelect = document.getElementById('crop');
-for (const [value, entry] of Object.entries(CROPS)) {
-  const opt = document.createElement('option');
-  opt.value = value;
-  opt.textContent = entry.label;
-  cropSelect.appendChild(opt);
-}
-
-function bindText(id, apply) {
-  document.getElementById(id).addEventListener('input', (e) => { apply(e.target.value); paint(); });
-}
-function bindCheck(id, apply) {
-  document.getElementById(id).addEventListener('change', (e) => { apply(e.target.checked); paint(); });
-}
-bindText('title', (v) => { state.title = v; });
-bindText('subtitle', (v) => { state.subtitle = v; });
-bindCheck('grain', (v) => { state.grain = v; });
-bindCheck('vignette', (v) => { state.vignette = v; });
-bindCheck('motifs', (v) => { state.motifs = v; });
-
-document.getElementById('zoom').addEventListener('input', (e) => {
-  state.panels[selected].zoom = Number(e.target.value);
-  paint();
-});
-cropSelect.addEventListener('change', (e) => {
-  const panel = state.panels[selected];
-  const crop = CROPS[e.target.value] ?? CROPS.fill;
-  panel.crop = e.target.value;
-  panel.zoom = crop.zoom;
-  panel.oy = crop.oy;
-  paint();
-});
-document.getElementById('tone').addEventListener('input', (e) => {
-  state.panels[selected].tone = Number(e.target.value);
-  paint();
-});
-document.getElementById('duotonePanel').addEventListener('change', (e) => {
-  state.panels[selected].duotone = e.target.checked;
-  paint();
-});
-
-async function placePhoto(i, img, key) {
-  state.panels[i].img = img;
-  state.panels[i].key = key;
-  state.panels[i].zoom = 1;
-  state.panels[i].ox = 0;
-  state.panels[i].oy = 0;
-  state.panels[i].crop = 'fill';
-  paint();
-}
-
-document.getElementById('samplePier').addEventListener('click', async () => {
-  await placePhoto(selected, await loadImage('samples/pier.jpg'), 'pier');
-});
-document.getElementById('sampleBoulevard').addEventListener('click', async () => {
-  await placePhoto(selected, await loadImage('samples/boulevard.jpg'), 'boulevard');
-});
-document.getElementById('upload').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  await placePhoto(selected, await loadImage(URL.createObjectURL(file)), 'upload');
-  status.textContent = `Loaded ${file.name} into panel ${selected + 1}.`;
-});
-document.getElementById('fillAll').addEventListener('click', () => {
-  const src = state.panels[selected];
-  if (!src.img) { status.textContent = 'Pick a photo for this panel first.'; return; }
-  for (let i = 0; i < activePanelCount(); i++) {
-    state.panels[i].img = src.img;
-    state.panels[i].key = src.key;
-    state.panels[i].zoom = src.zoom;
-    state.panels[i].ox = src.ox;
-    state.panels[i].oy = src.oy;
-    state.panels[i].duotone = src.duotone;
-    state.panels[i].tone = src.tone;
-  }
-  status.textContent = 'One photo now fills every panel.';
-  paint();
-});
-document.getElementById('duotoneAll').addEventListener('click', () => {
-  const on = state.panels[selected].duotone;
-  for (let i = 0; i < activePanelCount(); i++) {
-    state.panels[i].duotone = on;
-    state.panels[i].tone = state.panels[selected].tone;
-  }
-  status.textContent = on ? 'Duotone on for every panel.' : 'Duotone off for every panel.';
-  paint();
-});
-document.getElementById('clearPanel').addEventListener('click', () => {
-  state.panels[selected] = emptyPanel();
-  paint();
-});
-document.getElementById('resetPanels').addEventListener('click', () => {
-  state.panels = Array.from({ length: 9 }, emptyPanel);
-  selected = 0;
-  status.textContent = 'All panels cleared.';
-  paint();
-});
-
-function pointerInCanvas(e) {
-  const rect = canvas.getBoundingClientRect();
-  return {
-    x: (e.clientX - rect.left) * (canvas.width / rect.width),
-    y: (e.clientY - rect.top) * (canvas.height / rect.height),
-  };
-}
-
-canvas.addEventListener('pointerdown', (e) => {
-  const p = pointerInCanvas(e);
-  const i = panelAt(state.layout, canvas.width, canvas.height, p.x, p.y);
-  if (i === -1) return;
-  selected = i;
-  drag = { x: p.x, y: p.y, ox: state.panels[i].ox, oy: state.panels[i].oy };
-  canvas.setPointerCapture(e.pointerId);
-  paint();
-});
-canvas.addEventListener('pointermove', (e) => {
-  if (!drag) return;
-  const p = pointerInCanvas(e);
-  const panel = state.panels[selected];
-  const frac = LAYOUTS[state.layout].panels[selected];
-  panel.ox = drag.ox + (p.x - drag.x) / (frac[2] * canvas.width);
-  panel.oy = drag.oy + (p.y - drag.y) / (frac[3] * canvas.height);
-  paint();
-});
-canvas.addEventListener('pointerup', () => { drag = null; });
-
-/** Renders the cover at one export size and returns it as a PNG blob. */
-function renderBlob(size) {
-  return new Promise((resolve) => {
-    const off = document.createElement('canvas');
-    off.width = size.w;
-    off.height = size.h;
-    drawCover(off, state);
-    off.toBlob((blob) => resolve(blob), 'image/png');
+function buildPickers() {
+  fillChips('layoutRow', LAYOUTS, state.layout, (id) => {
+    state.layout = id;
+    buildPanels();
+    buildPickers();
+    syncPanelControls();
+    renderPreview();
+  });
+  fillChips('gradeRow', GRADES, state.grade, (id) => {
+    state.grade = id;
+    buildPickers();
+    renderPreview();
+  });
+  fillChips('sizeRow', Object.entries(SIZES).map(([id, s]) => ({ id, label: s.label })), state.size, (id) => {
+    state.size = id;
+    buildPickers();
+    renderPreview();
+  });
+  fillChips('cropRow', CROPS, state.panels[selected]?.crop ?? 'full', (id) => {
+    const panel = state.panels[selected];
+    if (!panel) return;
+    const preset = cropById(id);
+    panel.crop = id;
+    panel.zoom = preset.zoom;
+    panel.px = preset.px;
+    panel.py = preset.py;
+    syncPanelControls();
+    renderPreview();
+  });
+  const photoRow = document.getElementById('photoRow');
+  photoRow.innerHTML = '';
+  photos.forEach((photo, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = photo.label;
+    if (state.panels[selected]?.photo === i) b.classList.add('active');
+    b.addEventListener('click', () => {
+      const panel = state.panels[selected];
+      if (!panel) return;
+      panel.photo = i;
+      buildPickers();
+      renderPreview();
+    });
+    photoRow.appendChild(b);
   });
 }
 
-function saveBlob(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+function syncPanelControls() {
+  const panel = state.panels[selected];
+  if (!panel) return;
+  document.getElementById('zoomRange').value = String(panel.zoom);
+  document.getElementById('duotoneBox').checked = panel.duotone;
+  document.getElementById('toneRange').value = String(panel.tone);
+  document.querySelectorAll('#cropRow button').forEach((b, i) => {
+    b.classList.toggle('active', CROPS[i].id === panel.crop);
+  });
 }
 
-/** Renders the cover at the chosen export size and downloads it as a PNG. */
-export async function exportPNG() {
-  const size = SIZES[state.size];
-  const blob = await renderBlob(size);
-  saveBlob(blob, `cover-${size.w}x${size.h}.png`);
-  status.textContent = `Saved cover-${size.w}x${size.h}.png`;
+function downloadCanvas(canvas, name) {
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }, 'image/png');
 }
 
-/** Renders all three post sizes at once and downloads three PNGs. */
-export async function exportAllPNG() {
-  const names = [];
-  for (const [key, size] of Object.entries(SIZES)) {
-    const blob = await renderBlob(size);
-    saveBlob(blob, `cover-${size.w}x${size.h}.png`);
-    names.push(`${size.w}x${size.h}`);
-    // Small pause so the browser keeps all three downloads instead of
-    // collapsing them into one.
-    await new Promise((resolve) => setTimeout(resolve, 350));
+async function exportSize(sizeId) {
+  const s = SIZES[sizeId];
+  const off = document.createElement('canvas');
+  renderExact(off, s.w, s.h);
+  downloadCanvas(off, `cover-${sizeId}-${s.w}x${s.h}.png`);
+}
+
+async function exportAll() {
+  for (const sizeId of Object.keys(SIZES)) {
+    exportSize(sizeId);
+    await new Promise((r) => setTimeout(r, 350));
   }
-  status.textContent = `Saved all sizes: ${names.join(', ')}.`;
 }
-document.getElementById('export').addEventListener('click', exportPNG);
-document.getElementById('exportAll').addEventListener('click', exportAllPNG);
 
-// The lettering uses the system sans-serif stack (no bundled font file),
-// so there is nothing to preload before the first paint — just wait for
-// whatever system faces are loading, then paint.
-async function boot() {
-  try {
-    await document.fonts.ready;
-  } catch { /* no system faces to wait for */ }
-  const params = new URLSearchParams(location.search);
-  const shot = params.get('shot');
-  if (shot) {
-    await runShot(shot, params, {
-      state, setPanelPhoto: placePhoto, redraw: paint, markButtons: highlight, SIZES,
+/** Apply a ?shot= spec (from shots.js) on top of the default state. */
+function applyShot(spec) {
+  if (spec.layout && layoutById(spec.layout)) state.layout = spec.layout;
+  if (spec.grade && gradeById(spec.grade)) state.grade = spec.grade;
+  if (spec.size && SIZES[spec.size]) state.size = spec.size;
+  if (spec.title !== undefined) state.title = spec.title;
+  if (spec.subtitle !== undefined) state.subtitle = spec.subtitle;
+  buildPanels();
+  const keyToIndex = new Map(photos.map((p, i) => [p.key, i]));
+  state.panels.forEach((panel, i) => {
+    if (spec.photos[i] && keyToIndex.has(spec.photos[i])) panel.photo = keyToIndex.get(spec.photos[i]);
+    if (spec.pan[i] !== undefined && !Number.isNaN(spec.pan[i])) panel.px = spec.pan[i];
+    if (spec.pan[i + state.panels.length] !== undefined) panel.py = spec.pan[i + state.panels.length];
+    if (spec.duotone[i] !== undefined) panel.duotone = spec.duotone[i];
+    if (spec.tone[i] !== undefined && !Number.isNaN(spec.tone[i])) panel.tone = spec.tone[i];
+    if (spec.zoom !== undefined && !Number.isNaN(spec.zoom)) panel.zoom = spec.zoom;
+    if (spec.crop && cropById(spec.crop)) {
+      const preset = cropById(spec.crop);
+      panel.crop = spec.crop;
+      panel.zoom = preset.zoom;
+      panel.px = preset.px;
+      panel.py = preset.py;
+    }
+  });
+  // Shot pans can push a photo out of its cell (a pan point near an edge leaves a
+  // black band); clamp every panel back inside its own cell before rendering.
+  const size = SIZES[state.size] ?? SIZES.wide;
+  const cells = layoutById(state.layout).cells(size.w, size.h);
+  state.panels.forEach((panel, i) => {
+    const img = photos[panel.photo]?.img;
+    if (img && cells[i]) clampPan(panel, cells[i], img);
+  });
+}
+
+function bindEditor() {
+  document.getElementById('titleInput').addEventListener('input', (e) => {
+    state.title = e.target.value;
+    renderPreview();
+  });
+  document.getElementById('subtitleInput').addEventListener('input', (e) => {
+    state.subtitle = e.target.value;
+    renderPreview();
+  });
+  document.getElementById('zoomRange').addEventListener('input', (e) => {
+    const panel = state.panels[selected];
+    if (!panel) return;
+    panel.zoom = Number(e.target.value);
+    panel.crop = 'full';
+    renderPreview();
+  });
+  document.getElementById('duotoneBox').addEventListener('change', (e) => {
+    const panel = state.panels[selected];
+    if (!panel) return;
+    panel.duotone = e.target.checked;
+    renderPreview();
+  });
+  document.getElementById('toneRange').addEventListener('input', (e) => {
+    const panel = state.panels[selected];
+    if (!panel) return;
+    panel.tone = Number(e.target.value);
+    renderPreview();
+  });
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    state.panels = state.panels.map((_, i) => defaultPanel(i % Math.max(1, photos.length)));
+    syncPanelControls();
+    renderPreview();
+  });
+  document.getElementById('exportOne').addEventListener('click', () => exportSize(state.size));
+  document.getElementById('exportAll').addEventListener('click', exportAll);
+  document.getElementById('upload').addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const url = await new Promise((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.readAsDataURL(file);
     });
+    const img = await loadImage(url);
+    photos.push({ key: `upload-${photos.length}`, label: file.name.slice(0, 18), src: url, img });
+    const panel = state.panels[selected];
+    if (panel) panel.photo = photos.length - 1;
+    buildPickers();
+    renderPreview();
+  });
+
+  // Panel picking and drag-pan on the preview canvas.
+  let drag = null;
+  const toCanvas = (e) => {
+    const rect = preview.getBoundingClientRect();
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * preview.width,
+      y: ((e.clientY - rect.top) / rect.height) * preview.height,
+    };
+  };
+  const hitCell = (x, y) => {
+    const cells = layoutById(state.layout).cells(preview.width, preview.height);
+    return cells.findIndex((c) => x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h);
+  };
+  preview.addEventListener('pointerdown', (e) => {
+    const p = toCanvas(e);
+    const hit = hitCell(p.x, p.y);
+    if (hit < 0) return;
+    selected = hit;
+    buildPickers();
+    syncPanelControls();
+    drag = { x: p.x, y: p.y };
+    preview.setPointerCapture(e.pointerId);
+  });
+  preview.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const panel = state.panels[selected];
+    const img = photos[panel.photo]?.img;
+    if (!panel || !img) return;
+    const p = toCanvas(e);
+    const cells = layoutById(state.layout).cells(preview.width, preview.height);
+    const cell = cells[selected];
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const scale = Math.max(cell.w / iw, cell.h / ih) * panel.zoom;
+    panel.px -= (p.x - drag.x) / (iw * scale);
+    panel.py -= (p.y - drag.y) / (ih * scale);
+    clampPan(panel, cell, img);
+    panel.crop = 'full';
+    drag = p;
+    renderPreview();
+  });
+  preview.addEventListener('pointerup', () => { drag = null; });
+  preview.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const panel = state.panels[selected];
+    if (!panel) return;
+    panel.zoom = Math.min(3, Math.max(1, panel.zoom * (e.deltaY < 0 ? 1.1 : 0.9)));
+    panel.crop = 'full';
+    syncPanelControls();
+    renderPreview();
+  }, { passive: false });
+}
+
+async function boot() {
+  shotSpec = parseShot();
+  await loadPhotos();
+  if (shotSpec) applyShot(shotSpec);
+  buildPickers();
+  syncPanelControls();
+  bindEditor();
+  if (shotSpec?.mode === 'cover') {
+    document.body.classList.add('shot-cover');
+    coverCanvas.hidden = false;
+    coverCanvas.width = window.innerWidth;
+    coverCanvas.height = window.innerHeight;
+    const dims = { w: window.innerWidth, h: window.innerHeight };
+    renderCover(coverCanvas, state, photos.map((p) => p.img ?? null), dims);
   } else {
-    // Default scene: the pier sample in the hero panel, boulevard below.
-    try {
-      const pier = await loadImage('samples/pier.jpg');
-      const boulevard = await loadImage('samples/boulevard.jpg');
-      const keys = ['pier', 'boulevard'];
-      for (let i = 0; i < 6; i++) {
-        state.panels[i].img = i % 2 === 0 ? pier : boulevard;
-        state.panels[i].key = keys[i % 2];
-      }
-    } catch { /* samples missing: panels stay empty */ }
-    paint();
+    renderPreview();
   }
+  window.__shotReady = true;
 }
 
 boot();
