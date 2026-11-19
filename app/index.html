@@ -3,20 +3,60 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cover Snap</title>
+<title>Vice City Cover Studio</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="./style.css">
 </head>
 <body>
 <main class="app">
+  <section class="preview">
+    <canvas id="cover" width="1080" height="1080" aria-label="The cover preview"></canvas>
+    <p class="hint">Click a panel to select it, then drag inside it to move the photo.</p>
+  </section>
   <section class="controls">
-    <h1>Cover Snap</h1>
-    <p>A photo and a caption, made into a square cover.</p>
-    <label>Photo <input id="photo" type="file" accept="image/*"></label>
-    <label>Caption <input id="caption" type="text" maxlength="40" value="Sunset Heist"></label>
-    <button id="export" type="button">Export PNG 1080 x 1080</button>
+    <h1>Vice City Cover Studio</h1>
+    <p class="tagline">Your photo, your caption — a GTA-style cover poster. Everything stays on this machine.</p>
+
+    <fieldset>
+      <legend>Layout</legend>
+      <div class="row" id="layouts"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Export size</legend>
+      <div class="row" id="sizes"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Grade</legend>
+      <div class="row" id="presets"></div>
+      <label class="check"><input id="grain" type="checkbox" checked> Film grain</label>
+      <label class="check"><input id="vignette" type="checkbox" checked> Vignette</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Caption</legend>
+      <label>Title <input id="title" type="text" maxlength="30" value="VICE CITY"></label>
+      <label>Subtitle <input id="subtitle" type="text" maxlength="40" value="A LEONIDA STORY"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Panel <span id="panelName">1</span> photo</legend>
+      <div class="row">
+        <button id="samplePier" type="button">Sample: Pier</button>
+        <button id="sampleBoulevard" type="button">Sample: Boulevard</button>
+      </div>
+      <label class="file">Upload your own photo <input id="upload" type="file" accept="image/*"></label>
+      <label>Zoom <input id="zoom" type="range" min="1" max="3" step="0.05" value="1"></label>
+      <div class="row">
+        <button id="fillAll" type="button">Fill all panels with this photo</button>
+        <button id="clearPanel" type="button">Clear panel</button>
+      </div>
+    </fieldset>
+
+    <button id="export" type="button" class="primary">Export PNG</button>
     <p id="status" role="status"></p>
   </section>
-  <canvas id="cover" width="1080" height="1080" aria-label="The cover"></canvas>
 </main>
 <script type="module" src="./src/main.js"></script>
 </body>

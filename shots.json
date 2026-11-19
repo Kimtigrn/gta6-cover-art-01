@@ -1,5 +1,1 @@
-[
-  { "name": "1-cover.jpg", "query": "?shot=cover&photo=pier&caption=Sunset%20Heist", "w": 1080, "h": 1080 },
-  { "name": "2-editor.jpg", "query": "?shot=editor&photo=boulevard&caption=Boulevard%20Queen", "w": 1280, "h": 720 },
-  { "name": "3-cover.jpg", "query": "?shot=cover&photo=boulevard&caption=Boulevard%20Queen", "w": 1080, "h": 1080 }
-]
+[{"h":720,"name":"1-cover.jpg","query":"?shot=cover&layout=hero2&size=wide&preset=sunset&photo=pier,boulevard,pier&pan=0.65,0.7,0.65&title=VICE%20CITY&subtitle=A%20LEONIDA%20STORY","w":1280},{"h":720,"name":"2-editor.jpg","query":"?shot=editor&layout=grid&size=wide&preset=neon&photo=boulevard,pier,boulevard,pier&title=NEON%20NIGHTS&subtitle=MIDNIGHT%20IN%20VICE%20CITY","w":1280},{"h":1080,"name":"3-cover-portrait.jpg","query":"?shot=cover&layout=strips&size=portrait&preset=pastel&photo=pier,boulevard,pier&title=SUNSET%20BOULEVARD&subtitle=GOLDEN%20HOUR","w":864},{"h":1024,"name":"4-cover-square.jpg","query":"?shot=cover&layout=split&size=square&preset=neon&photo=boulevard,pier,boulevard&title=MIDNIGHT%20DRIVE&subtitle=Vice%20City%20After%20Dark","w":1024}]
